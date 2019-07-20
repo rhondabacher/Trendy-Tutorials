@@ -3,7 +3,8 @@
 Here are various tutorials for using the Trendy Bioconductor package for segmented regression analysis of expression dynamics for high-throughput ordered profiling experiments.
 
 
-## The tutorial dynamicsWithTrendy-SingleCell.Rmd is for using Trendy on single-cell RNA-seq data that has been computationally reordered. 
+### dynamicsWithTrendy-SingleCell.Rmd 
+Is a tutorial for using Trendy on single-cell RNA-seq data that has been computationally reordered. 
 
 #### If you use Trendy in your research, please cite:
 
@@ -15,7 +16,4 @@ BMC Bioinformatics. 2018 Dec;19(1):380.](https://bmcbioinformatics.biomedcentral
 http://www.bioconductor.org/packages/release/bioc/vignettes/Trendy/inst/doc/Trendy_vignette.pdf
 
 #### The current version of Trendy is available on Bioconductor: http://www.bioconductor.org/packages/release/bioc/html/Trendy.html
-
-#### The vignette for Trendy can be found here:
-http://www.bioconductor.org/packages/release/bioc/vignettes/Trendy/inst/doc/Trendy_vignette.pdf
 

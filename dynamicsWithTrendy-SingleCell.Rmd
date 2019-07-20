@@ -1,0 +1,202 @@
+---
+title: "Dynamics with Trendy in single-cell data"
+author: "Rhonda Bacher"
+date: "7/21/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+The dataset I'm using is from [GSE75748](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE75748). Briefly, a total of 758 single cells were captured and profiled by scRNA-seq at 0, 12, 24, 36, 72, and 96 hours of differentiation to produce definitive endoderm cells from human embryonic stem cells.
+
+This first part is pre-processing and normalization. Can skip this by downloading the chu-data.rds here https://github.com/rhondabacher/Trendy-Tutorials:
+
+```{r, echo=TRUE, eval=FALSE}
+## Preprocessing of example dataset
+
+sc.ec <- data.matrix(read.table("~/Downloads/GSE75748_sc_time_course_ec.csv", sep=",", header=T, row.names=1, stringsAsFactors = FALSE))
+pd <- data.frame(hour = sapply(strsplit(colnames(sc.ec), "_"), function(x) x[[1]]), stringsAsFactors = FALSE)
+rownames(pd) <- colnames(sc.ec)
+pd$hour <- gsub("H9.00hb4s", "0", pd$hour)
+pd$hour <- gsub("H9.12h", "12", pd$hour)
+pd$hour <- gsub("H9.24h", "24", pd$hour)
+pd$hour <- gsub("H9.36h", "36", pd$hour)
+pd$hour <- gsub("H9.72h", "72", pd$hour)
+pd$hour <- gsub("H9.96h", "96", pd$hour)
+
+library(SingleCellExperiment)
+chu <- SingleCellExperiment(assays = list(counts = sc.ec), colData = pd)
+chu <- normalize(chu)
+colData(chu)
+table(colData(chu)$hour)
+
+library(SCnorm)
+chuNorm <- SCnorm(chu, Conditions = pd$hour)
+
+saveRDS(chuNorm, file = "chu-data.rds")
+
+```
+
+
+To get pseduotime estimation method we will use in this example is [slingshot](https://bioconductor.org/packages/release/bioc/html/slingshot.html). Other methods can also be used.
+
+```{r, echo=T, eval=TRUE, warning=F, message=F}
+### Load in example data
+chuNorm <- readRDS("chu-data.rds")
+chuNorm.subset <- chuNorm[,which(chuNorm$hour != 0)]
+chuNorm.subset <- chuNorm.subset[-grep("ERCC-", rownames(chuNorm.subset)),]
+# Ignoring time zero for this example.
+ 
+```
+
+The following steps mainly follow those from the slingshot vignette and may be replaced if using an alternative ordering method.
+
+First, we need to get reduced representation of cells, could use PCA or tSNE. Here we will use Diffusion maps, since this is used in the slingshot vignette.
+
+```{r, echo=T, eval=TRUE, warning=F, message=F, fig.height=5} 
+## Diffusion Map
+library(destiny)
+assay(chuNorm.subset, "logcounts") <- log2(normcounts(chuNorm.subset) + 1)
+
+dm <- DiffusionMap(t(assays(chuNorm.subset)$logcounts))
+rddim <- cbind(DC1 = dm$DC1, DC2 = dm$DC2)
+plot(rddim, col = rgb(0,0,0,.5), pch=16, asp = 1)
+reducedDims(chuNorm.subset) <- SimpleList(DiffMap = rddim)
+```
+
+Now we will force slingshot to reconstruct the cell order with 12 as the starting point and 96 as the end point. Instead of a clustering step we will hours as the groups.
+ 
+```{r, echo=T, eval=TRUE, warning=F, message=F, fig.height=5} 
+## Slingshot
+library(slingshot)
+sce <- slingshot(chuNorm.subset, clusterLabels = 'hour', reducedDim = 'DiffMap',
+                 start.clus="12", end.clu="96")
+library(RColorBrewer)
+colors <- colorRampPalette(brewer.pal(11,'Spectral')[-6])(100)
+plotcol <- colors[cut(sce$slingPseudotime_1, breaks=100)]
+
+par(mar=c(5,5,2,1))
+plot(reducedDims(sce)$DiffMap, col = plotcol, pch=16, cex.axis=1.2, cex.lab=1.3)
+lines(SlingshotDataSet(sce), lwd=2, col='black')
+lines(SlingshotDataSet(sce), type='lineage', lwd=2, col='gray24')
+
+out.order <- data.frame(Diff1 = reducedDims(sce)$DiffMap[,1], Diff2 = reducedDims(sce)$DiffMap[,2], 
+                            Hour = factor(colData(chuNorm.subset)$hour))
+head(out.order)
+X = tapply(out.order$Diff1, out.order$Hour, mean)+c(0,0,.02,0,0)
+Y = tapply(out.order$Diff2, out.order$Hour, mean)+c(.02, .02, 0,-.03,.02)
+text(X, Y, labels=as.character(c("12", "24", "36", "72", "96")), cex=2)
+```
+
+We can plot each gene's smoothed expression fit across pseudotime by fitting a loess GAM:
+
+```{r, echo=T, eval=TRUE, warning=F, message=F, fig.height=5} 
+## Fit GAM to top 1000 variable genes
+Y <- assay(chuNorm.subset, "logcounts")
+var1K <- names(sort(apply(Y, 1, var),decreasing = TRUE))[1:1000]
+Y <- Y[var1K, ]  # only counts for variable genes
+
+# Fit GAM for each gene using pseudotime as independent variable.
+library(gam)
+t <- sce$slingPseudotime_1
+gam.pval <- apply(Y, 1, function(z){
+  d <- data.frame(z=z, t=t)
+  tmp <- gam(z ~ lo(t), data=d)
+  p <- summary(tmp)[4][[1]][1,5]
+  p
+})
+topgenes <- names(sort(gam.pval, decreasing = FALSE))[1:100]
+
+## Plot gene expr. along pseudotime with GAM fit
+library(scater)
+plotExpression(sce, topgenes[1], x = "slingPseudotime_1",
+               colour_by = "hour", show_violin = FALSE,
+               show_smooth = TRUE) +
+  theme(text = element_text(size=20),legend.text=element_text(size=15))
+```
+
+Now that we have an order of cells with estimates psuedotimes, we can use the Trendy package to characterize times and rates of change across pseudotime via breakpoints and segment slopes.
+
+```{r, echo=T, eval=TRUE, warning=F, message=F, fig.height=5} 
+## Use Trendy
+library(Trendy)
+
+## Rescale time
+# One option, rescale time between 12 and 96
+t <- (sce$slingPseudotime_1 - min(sce$slingPseudotime_1)) / (max(sce$slingPseudotime_1) - min(sce$slingPseudotime_1))
+t <- t*(96 - 12) + 12
+names(t) <- colnames(Y)
+ord <- names(sort(t))
+```
+
+Trendy has a few different parameters that can be set by the user:
+
+```{r, echo=T, eval=TRUE, warning=F, message=F, fig.height=5} 
+# meanCut = 0 removes genes with very low expression.
+# maxK = 5 means genes can have a maximum of 5 breakpoints
+# pvalCut = .2 determines the p-value of a slope segment to be up/down instead of flat/no-change.
+getTrends <- trendy(Y[topgenes,ord], tVectIn = sort(t), meanCut = 0, maxK = 5, pvalCut = .2)
+res <- Trendy::results(getTrends)
+
+# Require the adjusted R^2 to be larger than .5. This could be lowered since sc data expression is much noisier.
+res.top <- topTrendy(res, adjR2Cut = .5)
+res.top$AdjustedR2
+```
+
+Here is the same gene plot with the Trendy fit:
+
+```{r, echo=T, eval=TRUE, warning=F, message=F, fig.height=6, fig.width=8} 
+plotFeature(Data = Y[,ord], xlab="Rescaled Pseudotime (Hour)",
+            tVectIn = sort(t), simple = FALSE,
+            showLegend = TRUE,legendLocation = 'side',
+            featureNames = c(topgenes[1]),
+            trendyOutData = res )
+```
+
+
+Heatmap of the top trends:
+
+```{r, echo=T, eval=TRUE, warning=F, message=F, fig.height=5}
+res.trend <- trendHeatmap(res.top, cexRow = .4, cexCol = .1)
+```
+
+
+Scatter plots of Trendy fits for genes going down first (just a few shown here):
+
+```{r, echo=T, eval=TRUE, warning=F, message=F, fig.height=5} 
+par(mfrow=c(2,2))
+plotFeature(Data = Y[,ord], xlab="Rescaled Pseudotime",
+            tVectIn = sort(t), simple = FALSE,
+            showLegend = TRUE, legendLocation = 'bottom',
+            featureNames = names(res.trend$firstdown)[c(1:4)],
+            trendyOutData = res)
+```
+
+Scatter plots of Trendy fits for genes steady first (just a few shown here):
+
+```{r, echo=T, eval=TRUE, warning=F, message=F, fig.height=5} 
+par(mfrow=c(2,2))
+plotFeature(Data = Y[,ord], xlab="Rescaled Pseudotime",
+            tVectIn = sort(t), simple = FALSE,
+            showLegend = TRUE, legendLocation = 'bottom',
+            featureNames = names(res.trend$firstnochange)[c(1:4)],
+            trendyOutData = res)
+```
+
+Scatter plots of Trendy fits for genes going up first (just a few shown here):
+
+```{r, echo=T, eval=TRUE, warning=F, message=F, fig.height=5} 
+par(mfrow=c(2,2))
+plotFeature(Data = Y[,ord], xlab="Rescaled Pseudotime",
+            tVectIn = sort(t), simple = FALSE,
+            showLegend = TRUE, legendLocation = 'bottom',
+            featureNames = names(res.trend$firstup)[c(1:4)],
+            trendyOutData = res)
+```
+
+
+For questions email rbacher@ufl.edu.
+
